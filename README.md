@@ -12,7 +12,7 @@ Click **Analyze propagation** to calculate the HF outlook alongside reception hi
 
 The panel runs the official **ITU-R P.533-14** implementation locally for both directions and all 24 UTC hours. Ten representative frequencies cover 160m through 10m; enter custom frequencies anywhere from **1.6–30 MHz**, including non-amateur frequencies. These are model samples, not suggested operating channels. 6m, groundwave and sporadic-E openings are outside this baseline.
 
-Set transmit power, receiver bandwidth and receiver noise category. Under **Antennas at A and B**, choose a preset or build each endpoint independently; both directions share the selected power, bandwidth and noise category. Antenna geometry and height affect the actual propagation calculation, as described below. The target-hour table sorts by the weaker direction's modeled median SNR, and the **24-hour frequency outlook** heatmaps show every analyzed frequency across all 24 model hours. A shared red–amber–green table scale highlights lower through higher modeled SNR relative to the displayed values, without implying pass/fail thresholds. Model SNR is not numerically comparable with the WSPR/FT8 measurements. No calibrated voice threshold or link-success percentage is presented. Hourly CSV and JSON assumptions/provenance downloads are available.
+Set transmit power, receiver bandwidth and receiver noise category. Under **Antenna A** and **Antenna B**, choose a preset or build each endpoint independently; both directions share the selected power, bandwidth and noise category. Antenna geometry and height affect the actual propagation calculation, as described below. The target-hour table sorts by the weaker direction's modeled median SNR, and the **24-hour frequency outlook** heatmaps show every analyzed frequency across all 24 model hours. A shared red–amber–green table scale highlights lower through higher modeled SNR relative to the displayed values, without implying pass/fail thresholds. Model SNR is not numerically comparable with the WSPR/FT8 measurements. No calibrated voice threshold or link-success percentage is presented. Hourly CSV and JSON assumptions/provenance downloads are available.
 
 By default, the model uses NOAA's observed smoothed SSN for the exact selected UTC month, or NOAA's predicted SSN when a supported observation is unavailable. It never substitutes daily sunspot counts or a neighboring month. A manual smoothed sunspot number (R12) is available under **HF model settings** in the sidebar when needed. The shared analysis button requests NOAA conditions and ionosondes on every run (subject to their caches). The local HF model can still run with manual SSN when these network sources fail.
 
@@ -20,7 +20,7 @@ NOAA context includes timestamped planetary Kp and D-RAP highest affected freque
 
 ### Antenna builder
 
-**Antennas at A and B** in the sidebar offers an isotropic reference, dipoles at several heights, inverted Vs, horizontal or vertical square/rectangle/triangle loops, end-fed wires with a collinear counterpoise, and verticals with four elevated horizontal radials. Presets are starting dimensions: wire length/perimeter, height and true bearing are editable for each run. Height refers to the horizontal wire/loop plane, V apex, vertical loop bottom or vertical feedpoint. A loop’s bearing is its baseline direction, not its broadside beam. A triangle is equilateral; rectangles have an adjustable aspect ratio. The end-fed wire’s bearing points from its feed toward its far end. Advanced inputs set wire radius, poor/average/good ground and additional feedline/tuner loss.
+**Antenna A** and **Antenna B** in the sidebar offer an isotropic reference, dipoles at several heights, inverted Vs, horizontal or vertical square/rectangle/triangle loops, end-fed wires with a collinear counterpoise, and verticals with four elevated horizontal radials. Presets are starting dimensions: wire length/perimeter, height and true bearing are editable for each run. Height refers to the horizontal wire/loop plane, V apex, vertical loop bottom or vertical feedpoint. A loop’s bearing is its baseline direction, not its broadside beam. A triangle is equilateral; rectangles have an adjustable aspect ratio. The end-fed wire’s bearing points from its feed toward its far end. Advanced inputs set wire radius, poor/average/good ground and additional feedline/tuner loss.
 
 A and B antenna settings save automatically and independently to `.cache/settings/antenna_A.json` and `antenna_B.json`. Preset, antenna type, dimensions, height, orientation (including the Aim button result), ground and losses reload in new sessions and after restarts. They stay assigned to their A/B station slots until manually changed; changing a path does not silently resize or re-aim the antennas. Selecting another preset, including the isotropic reference, replaces that slot’s default. No Analyze or Save click is required. Files update atomically only when settings change; load/save failures are shown in the sidebar.
 
@@ -116,7 +116,7 @@ Data credits: [WSPR.live](https://wspr.live/), [HamSCI](https://hamsci.org/data)
 
 ```bash
 python -m venv .venv
-.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -r requirements.lock
 .venv/bin/streamlit run app.py
 ```
 
@@ -125,3 +125,78 @@ Restart a running Streamlit process after upgrading helper modules. Verification
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
 ```
+
+## Self-hosting
+
+For RHEL 9, Podman and a separate NGINX reverse proxy, see [deployment instructions](deploy/README.md).
+
+## Beta 0.1.0-beta.1
+
+WSPR downloads include all hours. Analyze reuses the current session's history when
+the endpoint circles, callsign, direction, lookback and row limit match. The history
+caption shows fetch time and query range. **Refresh WSPR history** requests newer
+reports and runs the analysis with the current settings. Failed refreshes show an
+error and retain the cache for a later retry; they do not display it as fresh results.
+
+**Beta feedback and diagnostics** previews the exact JSON download. Coordinates
+and callsigns are included by default and can be omitted. No feedback is sent
+automatically. Raw reports, uploads and validation observations are excluded.
+Review error messages and source metadata before sharing.
+
+Public deployments keep settings and validation history only for the current
+browser session. Export them before leaving or restarting. Desktop installations
+retain their local files. Python dependencies are pinned in `requirements.lock`;
+the container also pins the Python base image digest. Update the lock deliberately
+and rerun the release checks before shipping dependency changes.
+
+## Path details and saved-run PDFs
+
+A path details bar between the map and result cards shows short- and long-path
+lengths in kilometers, plus initial true bearings from A to B and B to A. The
+long-path headings are also shown. Calculations use the endpoint centers and a
+6,371 km mean Earth radius. Coincident or antipodal endpoints have no unique
+bearing; a station at an exact pole also has no unique true-north reference.
+The HF model continues to calculate the short path.
+
+After analyzing, click **Prepare run PDF** below the path bar, then **Download run
+PDF**. The report includes an offline geographic map of the saved endpoint circles
+and short great-circle path, coordinates, callsign, antenna and receiver setup,
+target-hour modeled SNR, directional 24-hour tables, reception evidence and source
+timestamps/errors. It includes coordinates and station details. Generating it makes
+no provider requests and does not run the propagation models again.
+
+The PDF always uses the last analyzed snapshot, even after controls are edited.
+A new analysis clears the prepared download and replaces that snapshot. In public
+mode, download before leaving or restarting; no report is stored permanently on
+the server. The PDF map uses bundled public-domain Natural Earth vector outlines,
+so it does not require a browser renderer or online map tile service.
+
+Magnetic azimuths are also shown for both directions and both routes. Each
+heading uses its departure endpoint's WMM declination at sea level on the target
+UTC date: magnetic = true minus east-positive declination, wrapped to 0-360°.
+Declinations and coefficient model names appear in the bar and PDF. Bundled WMM
+models support 2010-2029; dates outside that interval and magnetic blackout zones
+show unavailable rather than an extrapolated azimuth. Weak-field caution zones
+are labeled. Antenna orientation inputs remain true bearings.
+
+The PDF's Model assumptions table lists the values actually used: transmit power
+in both directions, receiver bandwidth and noise at both endpoints, model month,
+frequencies, endpoint antenna dimensions/orientations/ground/losses, and the
+smoothed sunspot value/source. Model provenance takes precedence over UI inputs.
+References: [WMM](https://www.ncei.noaa.gov/products/world-magnetic-model),
+[pyGeoMag](https://pygeomag.readthedocs.io/en/latest/api.html).
+
+PDF modeled tables now reuse the browser presentation: the target-hour summary
+has the same MHz / A→B / B→A / Weaker columns, ordering, one-decimal SNR values and
+relative cell colors. The 24-hour heatmaps render directly from the browser's
+Vega-Lite specification, with the same descending frequency order, selected
+local/UTC clock, selected direction view, shared viridis scale and target-hour
+outline. SNR labels are always printed in available cells. Heatmaps use a
+portrait report page with the two direction panels stacked vertically. Changing
+the browser heatmap direction or clock clears a prepared PDF; prepare it again
+to export the new presentation without rerunning the analysis. Rendering is local
+and requires no browser or online chart service.
+
+The PDF Prepare and Download buttons sit side by side. The report keeps station
+identities, endpoint coordinates/search radii, antennas, receiver setup and model
+assumptions together in one table. Every report page is portrait.

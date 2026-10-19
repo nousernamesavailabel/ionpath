@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import json
 import math
 from pathlib import Path
+from runtime_paths import private_path, public_mode
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -12,7 +13,7 @@ DB = Path(__file__).resolve().parent / '.cache/validation/history.sqlite3'
 
 @contextmanager
 def connect(path=None):
-    path = path or DB
+    path = path or (private_path('.cache/validation/history.sqlite3') if public_mode() else DB)
     Path(path).parent.mkdir(parents=True,exist_ok=True)
     connection=sqlite3.connect(path,timeout=10)
     connection.execute('PRAGMA foreign_keys=ON')
@@ -89,7 +90,8 @@ def render_validation():
     import pandas as pd
     import streamlit as st
     with st.expander('Prediction validation log'):
-        st.caption('Runs are saved locally when Analyze propagation completes. Existing WSPR/FT8 history is saved as evidence, not treated as a subsequent test or as failed reception when absent.')
+        st.caption('Settings and validation history are temporary for this browser session and are lost in a new session or server restart. Download exports below to keep them.' if public_mode() else 'Runs and validation history are saved locally and survive app restarts. Download exports below to share or back them up.')
+        st.caption('WSPR/FT8 history is saved as evidence, not treated as a subsequent test or as failed reception when absent.')
         try:
             history=runs();records=observations()
         except (OSError,sqlite3.Error) as exc:

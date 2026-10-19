@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import tempfile
 
+from runtime_paths import private_path, public_mode
 from antennas import defaults, KINDS, PRESETS
 
 SETTINGS = Path(__file__).resolve().parent / '.cache/settings'
@@ -13,7 +14,7 @@ SETTINGS = Path(__file__).resolve().parent / '.cache/settings'
 def settings_path(endpoint):
     if endpoint not in ('A', 'B'):
         raise ValueError('Unknown station slot.')
-    return SETTINGS / f'antenna_{endpoint}.json'
+    return private_path(f'.cache/settings/antenna_{endpoint}.json') if public_mode() else SETTINGS / f'antenna_{endpoint}.json'
 
 
 def validate(record):

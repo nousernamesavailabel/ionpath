@@ -1,5 +1,6 @@
 """Editable TX/RX circles for the Streamlit planner."""
 import math
+import json
 import folium
 from folium.plugins import Draw
 from branca.element import MacroElement, Template
@@ -19,7 +20,19 @@ class AreaControls(MacroElement):
         (function() {
             const map={{this._parent.get_name()}}, group={{this.group}};
             const circles=[{{this.circles|join(',')}}], markers=[{{this.markers|join(',')}}];
-            const roles=['tx','destination'], active={{this.active}};
+            const roles=['tx','destination'];
+            let active={{this.active}};
+            const path=L.polyline(circles.map(c=>c.getLatLng()),{color:'#64748b',weight:2,dashArray:'6 6'}).addTo(map);
+            map._plannerSync=function(areas,selected) {
+                active=selected;
+                circles.forEach(function(circle,i) {
+                    const area=areas[roles[i]];
+                    circle.setLatLng(area.center).setRadius(area.radius_km*1000);
+                    circle.setTooltipContent((i===0?'A':'B')+': '+area.radius_km.toFixed(1)+' km');
+                    markers[i].setLatLng(area.center);
+                });
+                path.setLatLngs(circles.map(c=>c.getLatLng()));
+            };
             let resizing=null, wasDragging=false;
             function nearOutline(circle,latlng) {
                 const center=circle.getLatLng(), point=map.latLngToLayerPoint(center);
@@ -78,64 +91,61 @@ class AreaControls(MacroElement):
                 group.removeLayer(e.layer);
                 map.fire('draw:edited',{layers:group,layer:circles[active],layerType:'circle'});
             });
-            map.on('draw:edited',function() {circles.forEach(function(c,i){markers[i].setLatLng(c.getLatLng());});});
+            map.on('draw:edited',function() {
+                circles.forEach(function(c,i){markers[i].setLatLng(c.getLatLng());});
+                path.setLatLngs(circles.map(c=>c.getLatLng()));
+            });
         })();
         {% endmacro %}''')
 
 
-class BrowserViewport(MacroElement):
-    """Keep viewport state in the browser, outside Streamlit's rerun loop."""
-    def __init__(self, revision):
+class MapSize(MacroElement):
+    """Update Leaflet's size without panning or restoring a saved viewport."""
+    def __init__(self):
         super().__init__()
-        self._name='BrowserViewport'
-        self.revision=revision
-        self.height=MAP_HEIGHT
+        self._name='MapSize'
         self._template=Template('''{% macro script(this, kwargs) %}
         (function() {
-            const map={{this._parent.get_name()}}, revision={{this.revision}};
-            const key='wspr-planner-viewport';
-            const container=map.getContainer();
-            container.style.height='{{this.height}}px';
-            // Leaflet must recalculate its viewport after the expander becomes visible.
+            const map={{this._parent.get_name()}}, container=map.getContainer();
             const observer=new ResizeObserver(function() {
-                if (container.clientWidth && container.clientHeight) map.invalidateSize({pan:false});
+                if (container.clientWidth && container.clientHeight)
+                    map.invalidateSize({pan:false,animate:false});
             });
             observer.observe(container);
             map.on('unload',function(){observer.disconnect();});
-            try {
-                const saved=JSON.parse(sessionStorage.getItem(key));
-                if (saved && saved.revision===revision && Number.isFinite(saved.zoom) &&
-                    Array.isArray(saved.center) && saved.center.length===2 && saved.center.every(Number.isFinite)) {
-                    map.setView(saved.center,saved.zoom,{animate:false});
-                }
-            } catch (_) {}
-            function remember() {
-                const center=map.getCenter();
-                try {sessionStorage.setItem(key,JSON.stringify({revision:revision,center:[center.lat,center.lng],zoom:map.getZoom()}));} catch (_) {}
-            }
-            map.on('moveend zoomend',remember);
-            remember();
         })();
         {% endmacro %}''')
 
 
-def build_map(areas, active='destination', view_revision=0):
-    tx,destination=areas['tx']['center'],areas['destination']['center']
-    midpoint=[(tx[0]+destination[0])/2,(tx[1]+((destination[1]-tx[1]+180)%360-180)/2+180)%360-180]
-    map_=folium.Map(location=midpoint,zoom_start=3,tiles='OpenStreetMap',height=MAP_HEIGHT)
+def area_updates(areas, active):
+    """Send geometry changes to the existing map without recreating it."""
+    group=folium.FeatureGroup(name='Area updates',control=False)
+    sync=MacroElement()
+    sync._name='AreaSync'
+    sync.payload=json.dumps(areas,allow_nan=False)
+    sync.active=0 if active=='tx' else 1
+    sync._template=Template('''{% macro script(this, kwargs) %}
+        if (window.map && window.map._plannerSync)
+            window.map._plannerSync({{this.payload}},{{this.active}});
+    {% endmacro %}''')
+    sync.add_to(group)
+    return group
+
+
+def build_map(areas, active='destination'):
+    # Initial view only. Endpoint changes never determine the viewport.
+    map_=folium.Map(location=[45,-120],zoom_start=3,tiles='OpenStreetMap',height=MAP_HEIGHT)
     group=folium.FeatureGroup(name='Selected areas').add_to(map_)
     circles=[]; markers=[]
     for role,color,label in [('tx','blue','A'),('destination','orange','B')]:
         area=areas[role]
         circles.append(folium.Circle(area['center'],radius=area['radius_km']*1000,color=color,fill=True,fill_opacity=0.12,tooltip=f'{label}: {area["radius_km"]:.1f} km').add_to(group))
-        markers.append(folium.Marker(area['center'],draggable=True,icon=folium.Icon(color=color,icon='bullseye',prefix='fa'),tooltip=f'{label} — drag to move').add_to(map_))
+        markers.append(folium.Marker(area['center'],draggable=True,auto_pan=False,icon=folium.Icon(color=color,icon='bullseye',prefix='fa'),tooltip=f'{label} — drag to move').add_to(map_))
     Draw(feature_group=group,show_geometry_on_click=False,
          draw_options={'circle':{'shapeOptions':{'color':'blue' if active=='tx' else 'orange'}},'polyline':False,'polygon':False,'rectangle':False,'marker':False,'circlemarker':False},
          edit_options={'remove':False}).add_to(map_)
     AreaControls(group,circles,markers,0 if active=='tx' else 1).add_to(map_)
-    folium.PolyLine([tx,destination],color='#64748b',weight=2,dash_array='6 6',tooltip='Selected endpoints (schematic path)').add_to(map_)
-    map_.fit_bounds([areas['tx']['center'],areas['destination']['center']],padding=(50,50),max_zoom=8)
-    BrowserViewport(view_revision).add_to(map_)
+    MapSize().add_to(map_)
     return map_
 
 

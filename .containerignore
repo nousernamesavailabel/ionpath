@@ -1,0 +1,13 @@
+*
+!*.py
+!requirements.txt
+!requirements.lock
+!scripts
+scripts/*
+!scripts/install_itu_model.py
+!scripts/itu_v14_3_manifest.json
+!Containerfile
+
+!assets
+assets/*
+!assets/ne_110m_land.geojson

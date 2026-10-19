@@ -9,11 +9,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo, available_timezones
+from runtime_paths import private_path, public_mode
+from beta_diagnostics import APP_VERSION, render_diagnostics
+from path_geometry import render_path_details
+from run_report import capture_run, render_report_export
 from dashboard import model_settings, run_context_layers, render_dashboard
 from path_evidence import DIRECTIONS, select_path
 from ft8_archive import ARCHIVE_DATE, ARCHIVE_PATH, FT8_FREQUENCIES, read_archive
 from streamlit_folium import st_folium
-from map_selection import MAP_HEIGHT, build_map, parse_areas, spatial_predicate
+from map_selection import MAP_HEIGHT, build_map, area_updates, parse_areas, spatial_predicate
 
 from planning import (activity_heatmap_data, grid_uncertainty, origin_history, filter_origins, coverage_flags,
                       ranking_explanation, hourly_evidence, hour_label)
@@ -34,8 +38,8 @@ WSPR_REFERENCE_DBM = 30  # Fixed 1 W WSPR comparison reference.
 MGRS_CONVERTER = mgrs.MGRS()
 
 COLS=['time','band','rx_sign','rx_lat','rx_lon','rx_loc','tx_sign','tx_lat','tx_lon','tx_loc','frequency','power','snr','code']
-TRANSMITTER_SETTINGS_PATH = Path(__file__).resolve().parent / 'transmitter_settings.json'
-DESTINATION_SETTINGS_PATH = Path(__file__).resolve().parent / 'destination_settings.json'
+TRANSMITTER_SETTINGS_PATH = private_path('transmitter_settings.json')
+DESTINATION_SETTINGS_PATH = private_path('destination_settings.json')
 LOCATION_FORMATS = ['Maidenhead', 'MGRS', 'Latitude / longitude']
 
 
@@ -279,6 +283,21 @@ def fetch_path(a_center,a_radius,b_center,b_radius,start,end,limit,direction,cal
     return result
 
 
+def load_wspr_history(state,a_center,a_radius,b_center,b_radius,lookback,limit,direction,callsign=None,refresh=False):
+    """Reuse this session's reports until the path or query settings change."""
+    signature=(a_center,a_radius,b_center,b_radius,lookback,limit,direction,callsign)
+    cached=state.get('wspr_history')
+    if refresh or cached is None or cached['signature'] != signature:
+        end=datetime.now(timezone.utc)
+        raw=fetch_path(a_center,a_radius,b_center,b_radius,end-timedelta(days=lookback),end,limit,direction,callsign)
+        state['wspr_history']={'signature':signature,'raw':raw.copy(deep=True),
+                               'start':end-timedelta(days=lookback),'end':end,
+                               'fetched_at':datetime.now(timezone.utc),'row_count':len(raw),
+                               'limited':raw.attrs.get('limited',False)}
+        return raw
+    return cached['raw'].copy(deep=True)
+
+
 def check_wspr_response(response):
     try:
         response.raise_for_status()
@@ -399,6 +418,9 @@ def mark_dashboard_run():
     st.session_state['dashboard_has_run'] = True
 
 st.title('HF Path Planner')
+st.caption(f'Beta {APP_VERSION}')
+if public_mode():
+    st.caption('Settings and validation history last only for this browser session. Download anything you want to keep before leaving or a server restart.')
 st.markdown('''<style>
 [data-testid="stMainBlockContainer"] {padding-top: 3.6rem;}
 [data-testid="stMain"] h1 {font-size: 1.7rem; padding-top: 0; padding-bottom: .2rem;}
@@ -438,7 +460,7 @@ with st.sidebar:
                 st.success('A defaults saved for future runs.')
             except (OSError, ValueError, TypeError) as exc:
                 st.error(f'Could not save transmitter defaults: {exc}')
-        st.caption('Saved locally for this app installation. Edit these fields and save again to update your defaults.')
+        st.caption('Saved for this browser session only.' if public_mode() else 'Saved locally for this app installation. Edit these fields and save again to update your defaults.')
     with st.expander('History'):
         lookback=st.slider('History to fetch (days)',7,365,90) if mode.startswith('WSPR.live') else None
         limit=st.select_slider('Maximum rows per online direction / cached archive',options=[10000,25000,50000,100000],value=50000) if not mode.startswith('CSV') else None
@@ -446,6 +468,9 @@ with st.sidebar:
         upload_signature=hashlib.sha256(uploaded.getvalue()).hexdigest() if uploaded is not None else None
         season=st.checkbox('Use similar time of year only',value=False) if not is_ft8 else False
         season_days=st.slider('Season window ± days',7,90,45) if season else 183
+        refresh_history=st.button('Refresh WSPR history',disabled=not mode.startswith('WSPR.live'),help='Fetch newer reports and update the analysis using the current settings.')
+        if mode.startswith('WSPR.live'):
+            st.caption('History includes all hours. Analyze propagation reuses it until the path or history settings change; Refresh WSPR history requests newer reports.')
         if is_ft8:
             st.info(f'One cached archive day: {ARCHIVE_DATE} UTC. No live feed or automatic archive downloads.')
     origin_filter=True
@@ -501,7 +526,6 @@ with st.container(border=True):
                         'destination':{'center':list(initial_dest[:2]),'radius_km':float(entered_radius)},
                     }
                     st.session_state['map_uncertainties']=(initial_tx[2],initial_dest[2])
-                    st.session_state['map_view_revision']=st.session_state.get('map_view_revision',0)+1
                 except ValueError as exc:
                     st.warning(f'Could not apply coordinates: {exc}')
                     st.session_state.setdefault('map_areas',{'tx':{'center':[61.2181,-149.9003],'radius_km':50.0},'destination':{'center':[32.7767,-96.7970],'radius_km':600.0}})
@@ -517,11 +541,20 @@ with st.container(border=True):
                 st.number_input('Orange B circle radius (km)',min_value=0.1,max_value=5000.0,step=10.0,
                                 key='destination_area_radius',on_change=update_area_radius,args=('destination',),
                                 help='Type a distance or use − / +. Updates the circle immediately without moving its center.')
-            map_result=st_folium(build_map(areas,'tx' if active_area=='A' else 'destination',st.session_state.get('map_view_revision',0)),
+            # Keep the base script constant: streamlit-folium keys its iframe by
+            # script contents. Update layers separately so edits never remount it.
+            if 'map_initial_areas' not in st.session_state:
+                import copy
+                st.session_state['map_initial_areas']=copy.deepcopy(areas)
+            map_result=st_folium(build_map(st.session_state['map_initial_areas']),
                                  key='path_selection_map',height=MAP_HEIGHT,use_container_width=True,
+                                 feature_group_to_add=area_updates(areas,'tx' if active_area=='A' else 'destination'),
                                  returned_objects=['all_drawings'])
             try:
-                changed=parse_areas(map_result.get('all_drawings'))
+                drawings=map_result.get('all_drawings')
+                fresh=drawings != st.session_state.get('map_last_drawings')
+                st.session_state['map_last_drawings']=drawings
+                changed=parse_areas(drawings) if fresh else None
                 if changed and changed != areas:
                     st.session_state['map_areas']=changed
                     st.session_state['map_uncertainties']=(0.,0.)
@@ -541,7 +574,7 @@ with st.container(border=True):
         st.caption(f'{local_target:%Y-%m-%d %H:%M %Z} = {utc_target:%Y-%m-%d %H:%M UTC} · '+(f'FT8 archive {ARCHIVE_DATE}' if is_ft8 else (f'WSPR · {lookback} days' if lookback else 'WSPR CSV')))
 
         with run_column:
-            run=st.button('Analyze propagation',type='primary',use_container_width=True, on_click=mark_dashboard_run, help='Run reception history, HF outlook and ionosondes together.')
+            run=st.button('Analyze propagation',type='primary',width='stretch', on_click=mark_dashboard_run, help='Update HF outlook and ionosondes; reuse reception history when the path and history settings are unchanged.')
 
 regional=selection_scope=='Any station in A circle'
 map_tx=tuple(areas['tx']['center'])
@@ -557,7 +590,17 @@ def load_ft8_day(path,stamp,tx_center,tx_radius,rx_center,rx_radius,row_limit,se
 
 dashboard_signature=(call,map_signature,hour,hour_tol,season,season_days,origin_radius,origin_filter,include_unknown,mode,lookback,limit,upload_signature,local_timezone,reference_date,json.dumps(model_options,sort_keys=True))
 
-if run:
+diagnostic_inputs={'a': {'center':map_tx,'radius_km':origin_radius},
+                   'b': {'center':map_dest,'radius_km':radius,'effective_radius_km':radius+st.session_state['map_uncertainties'][1]},
+                   'callsign':None if regional else call,'selection_scope':selection_scope,
+                   'direction':path_direction,'source':mode,'lookback_days':lookback,'row_limit':limit,
+                   'target_utc':utc_target.isoformat(),'timezone':local_timezone,'hour_tolerance':hour_tol,
+                   'season':season,'season_days':season_days,'model_settings':model_options}
+
+if run or refresh_history:
+    st.session_state.pop('run_report_pdf', None)
+    st.session_state.pop('run_report_snapshot', None)
+    st.session_state['diagnostic_run_inputs']=diagnostic_inputs
     st.session_state.pop('reception_error', None)
     with st.spinner('Analyzing HF outlook, NOAA conditions and ionosondes…'):
         st.session_state['path_dashboard'] = run_context_layers(map_tx, map_dest, utc_target, model_options)
@@ -581,9 +624,8 @@ if run:
             if uploaded is None: raise ValueError('Upload a CSV first.')
             raw=pd.read_csv(uploaded)
         else:
-            end=datetime.now(timezone.utc); start=end-timedelta(days=lookback)
-            with st.spinner('Retrieving WSPR reports…'):
-                raw=fetch_path(map_tx,origin_radius,map_dest,effective_radius,start,end,limit,path_direction,None if regional else call)
+            with st.spinner('Loading WSPR history…'):
+                raw=load_wspr_history(st.session_state,map_tx,origin_radius,map_dest,effective_radius,lookback,limit,path_direction,None if regional else call,refresh=refresh_history)
         if raw.empty and is_ft8:
             raise ValueError(f'No FT8 reports matched these circles on {ARCHIVE_DATE} UTC. This single archive day cannot establish whether the path is open now.')
         if raw.empty:
@@ -624,6 +666,10 @@ if run:
     except Exception as exc:
         st.session_state['path_dashboard']['validation_error'] = str(exc)
 
+    st.session_state['run_report_snapshot']=capture_run(st.session_state,diagnostic_inputs)
+
+render_path_details(map_tx,map_dest,utc_target)
+render_report_export(st.session_state,st.session_state.get('dashboard_signature') != dashboard_signature)
 
 if st.session_state.get('path_dashboard'):
     if dashboard_signature != st.session_state.get('dashboard_signature'):
@@ -631,6 +677,12 @@ if st.session_state.get('path_dashboard'):
     render_dashboard(BANDS, st.session_state.get('analysis_context', {}).get('waveform', waveform))
 else:
     st.info('Set A and B and a target hour, then click Analyze propagation once for all three sources. Advanced settings are in the sidebar.')
+
+if mode.startswith('WSPR.live') and st.session_state.get('wspr_history'):
+    cached_history=st.session_state['wspr_history']
+    st.caption(f"WSPR history fetched {cached_history['fetched_at']:%Y-%m-%d %H:%M UTC} · query range {cached_history['start']:%Y-%m-%d %H:%M} to {cached_history['end']:%Y-%m-%d %H:%M UTC} · {cached_history['row_count']:,} reports. These timestamps describe the cached query; changed settings apply on the next analysis.")
+
+render_diagnostics(st.session_state, diagnostic_inputs)
 
 with st.expander('Reception evidence details and exports'):
     if 'results_mgrs' in st.session_state:

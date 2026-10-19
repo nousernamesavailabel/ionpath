@@ -24,14 +24,15 @@ def model_settings(a=None, b=None):
         gain_a = gain_b = 0.
         manual = st.checkbox('Use manual SSN (offline fallback)', value=False)
         ssn = st.number_input('Manual smoothed sunspot number (R12)', 1, 311, 100) if manual else None
-    from antenna_panel import antenna_builder
-    with st.sidebar.expander('Antennas at A and B'):
         try:
             aim_frequencies = frequencies_from_text(frequencies)
         except ValueError:
             aim_frequencies = HF_FREQUENCIES
         aim_frequency = st.selectbox('Aim antennas at frequency (MHz)', aim_frequencies, index=min(range(len(aim_frequencies)), key=lambda i: abs(aim_frequencies[i]-7.15)))
+    from antenna_panel import antenna_builder
+    with st.sidebar.expander('Antenna A'):
         antenna_a = antenna_builder('A', a, b, aim_frequency)
+    with st.sidebar.expander('Antenna B'):
         antenna_b = antenna_builder('B', b, a, aim_frequency)
     return dict(antenna_a=antenna_a, antenna_b=antenna_b, frequency_text=frequencies, power=power, bandwidth=bandwidth, noise=noise,
                 gain_a=gain_a, gain_b=gain_b, manual=manual, ssn=ssn)

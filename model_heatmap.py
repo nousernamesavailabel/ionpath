@@ -67,7 +67,10 @@ def heatmap_spec(frame, direction, hour_order, clock, timezone_name, domain, num
                              {'aggregate': [], 'groupby': ['hour_key', 'utc_hour']}],
                'mark': {'type': 'rect', 'fillOpacity': 0, 'stroke': '#f43f5e', 'strokeWidth': 2.5},
                'encoding': {'y': {'value': 0}, 'y2': {'value': {'expr': 'height'}},
-                            'tooltip': {'value': None}}}]
+                            'tooltip': {'value': None}}},
+              # Restore cell-level hover targets above the full-column outline.
+              {'transform': [{'filter': 'datum.is_target_hour'}],
+               'mark': {'type': 'rect', 'fillOpacity': 0}}]
     if 'absorption_marker' in frame.columns:
         layers.append({'transform': [{'filter': "datum.absorption_marker === '!'"}],
                        'mark': {'type': 'text', 'fontSize': 9, 'fontWeight': 'bold', 'dy': -3, 'color': '#111827'},
@@ -86,11 +89,11 @@ def render_model_heatmap(hf, timezone_name='UTC'):
     st.caption('Frequency × hour × modeled SNR, with direction as a separate panel. Brighter cells mean stronger modeled SNR—not a guaranteed opening. Both panels and all direction views use the same scale.')
     view_column, clock_column, number_column = st.columns([2, 2, 1])
     with view_column:
-        view = st.selectbox('Heatmap direction', ['Both directions', 'Weaker direction', *DIRECTIONS])
+        view = st.selectbox('Heatmap direction', ['Both directions', 'Weaker direction', *DIRECTIONS], key='model_heatmap_view')
     with clock_column:
-        clock = st.radio('Heatmap clock', ['Local time', 'UTC'], horizontal=True)
+        clock = st.radio('Heatmap clock', ['Local time', 'UTC'], horizontal=True, key='model_heatmap_clock')
     with number_column:
-        numbers = st.checkbox('Show SNR labels', value=False)
+        numbers = st.checkbox('Show SNR labels', value=False, key='model_heatmap_numbers')
     frame, order = heatmap_data(hf['table'], hf['target'], timezone_name)
     from realtime_context import absorption_cells
     frame = absorption_cells(frame, hf['target'], hf.get('current_conditions', {}))
@@ -100,6 +103,6 @@ def render_model_heatmap(hf, timezone_name='UTC'):
     for container, direction in zip(containers, views):
         with container:
             st.markdown(f'**{direction}**')
-            st.vega_lite_chart(frame, spec=heatmap_spec(frame, direction, order, clock, timezone_name, domain, numbers), height=max(320, min(720, frame.frequency_mhz.nunique()*30+80)), use_container_width=True)
+            st.vega_lite_chart(frame, spec=heatmap_spec(frame, direction, order, clock, timezone_name, domain, numbers), height=max(320, min(720, frame.frequency_mhz.nunique()*30+80)), width='stretch')
     st.caption(f'Hover any cell for both directional SNRs and exact local/UTC times. Pink outline marks the target UTC hour {hf["target"].hour:02}:00. Gray means a missing model value. The weaker-direction view requires both directions; it is not a success probability.')
     st.caption('These are 24 monthly model bins on the target UTC date, arranged by the chosen clock—not a daily forecast. Local dates and UTC offsets are shown on hover; daylight-saving changes can repeat or skip local hour labels. All UTC bins remain distinct.')

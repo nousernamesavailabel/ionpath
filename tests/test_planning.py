@@ -42,6 +42,39 @@ def reports():
 
 
 class Calculations(unittest.TestCase):
+    def test_wspr_history_reuses_reports_and_invalidates_query_changes(self):
+        state={}
+        args=[(61.5,-149),50,(32.5,-97),600,90,10000,'Both directions','AK']
+        from unittest.mock import Mock
+        fetch=Mock(side_effect=lambda *args: reports())
+        with patch.dict(namespace,fetch_path=fetch):
+            first=namespace['load_wspr_history'](state,*args)
+            first.iloc[0,first.columns.get_loc('snr')]=999
+            reused=namespace['load_wspr_history'](state,*args)
+            self.assertEqual(fetch.call_count,1)
+            self.assertNotEqual(reused.iloc[0].snr,999)
+            for index,value in enumerate([(62,-149),60,(33,-97),650,120,25000,'A → B','OTHER']):
+                args[index]=value
+                namespace['load_wspr_history'](state,*args)
+                self.assertEqual(fetch.call_count,index+2)
+
+    def test_wspr_explicit_refresh_and_failed_refresh_preserve_timestamp(self):
+        from unittest.mock import Mock
+        state={}
+        args=[(61.5,-149),50,(32.5,-97),600,90,10000,'Both directions','AK']
+        fetch=Mock(return_value=reports())
+        with patch.dict(namespace,fetch_path=fetch):
+            namespace['load_wspr_history'](state,*args)
+            first=state['wspr_history']
+            namespace['load_wspr_history'](state,*args,refresh=True)
+            self.assertEqual(fetch.call_count,2)
+            self.assertIsNot(state['wspr_history'],first)
+            current=state['wspr_history']
+            fetch.side_effect=RuntimeError('Provider unavailable')
+            with self.assertRaises(RuntimeError):
+                namespace['load_wspr_history'](state,*args,refresh=True)
+            self.assertIs(state['wspr_history'],current)
+
     def test_heatmap_local_first_labels_order_and_utc_data_alignment(self):
         from datetime import date
         hourly=pd.DataFrame([{'band':14,'utc_hour':1,'weighted_reports':12.5,'reports':15,'days':2,'receivers':3}])
@@ -107,9 +140,11 @@ class Calculations(unittest.TestCase):
         self.assertIn("document.addEventListener('mouseup',finishResize)",html)
         self.assertIn('map.dragging.disable()',html)
         self.assertIn('getRadius()',html)
-        self.assertIn('sessionStorage.setItem',html)
-        self.assertIn('animate:false',html)
+        self.assertNotIn('sessionStorage',html)
+        self.assertIn('pan:false,animate:false',html)
         self.assertIn('featureGroup',html)
+        self.assertNotIn('.fitBounds(',html)
+        self.assertNotIn('.setView(',html)
         self.assertIn(' OR ',spatial_predicate(0,179.9,100))
         self.assertNotIn('tx_lon BETWEEN',spatial_predicate(89,0,500))
         with self.assertRaises(ValueError):
@@ -216,6 +251,39 @@ class Interface(unittest.TestCase):
         self.layers = patch('dashboard.run_context_layers', side_effect=context)
         self.layers.start()
         self.addCleanup(self.layers.stop)
+    def test_history_refresh_ui_and_diagnostic_preview(self):
+        class Response:
+            text=reports().to_csv(index=False)
+            def raise_for_status(self): pass
+        with tempfile.TemporaryDirectory() as folder:
+            app=Path(folder)/'app.py'
+            shutil.copyfile(ROOT/'app.py',app)
+            with patch('requests.get',return_value=Response()) as network:
+                test=AppTest.from_file(str(app),default_timeout=30).run()
+                next(b for b in test.button if b.label=='Analyze propagation').click().run()
+                self.assertFalse(test.exception,test.exception)
+                initial=network.call_count
+                stamp=test.session_state['wspr_history']['fetched_at']
+                next(sl for sl in test.slider if sl.label=='Target hour (local time)').set_value(18).run()
+                next(b for b in test.button if b.label=='Analyze propagation').click().run()
+                self.assertEqual(network.call_count,initial)
+                self.assertEqual(test.session_state['wspr_history']['fetched_at'],stamp)
+                next(b for b in test.button if b.label=='Refresh WSPR history').click().run()
+                self.assertFalse(test.exception,test.exception)
+                self.assertEqual(network.call_count,initial+2)
+                self.assertGreater(test.session_state['wspr_history']['fetched_at'],stamp)
+                self.assertTrue(any('WSPR history fetched' in c.value for c in test.caption))
+                self.assertTrue(test.checkbox(key='diagnostic_identity').value)
+                self.assertTrue(test.json)
+                before=network.call_count
+                next(b for b in test.button if b.label=='Prepare run PDF').click().run()
+                self.assertFalse(test.exception,test.exception)
+                self.assertEqual(network.call_count,before)
+                self.assertTrue(test.session_state['run_report_pdf'].startswith(b'%PDF-'))
+                saved=test.session_state['run_report_snapshot']['inputs']['target_utc']
+                next(sl for sl in test.slider if sl.label=='Target hour (local time)').set_value(10).run()
+                self.assertEqual(test.session_state['run_report_snapshot']['inputs']['target_utc'],saved)
+
     def test_ft8_source_uses_local_cache_and_separate_activity_labels(self):
         frame=reports()
         frame['time']=pd.to_datetime(frame.time,utc=True).map(lambda t:t.replace(year=2024,month=5,day=12))
@@ -244,7 +312,7 @@ class Interface(unittest.TestCase):
             shutil.copyfile(ROOT/'app.py',app)
             test=AppTest.from_file(str(app)).run()
             centers={role:area['center'][:] for role,area in test.session_state['map_areas'].items()}
-            revision=test.session_state['map_view_revision']
+            initial_areas=test.session_state['map_initial_areas']
             test.number_input(key='tx_area_radius').set_value(125.0).run()
             test.number_input(key='destination_area_radius').set_value(300.0).run()
             self.assertFalse(test.exception,test.exception)
@@ -252,19 +320,23 @@ class Interface(unittest.TestCase):
             self.assertEqual(areas['tx']['radius_km'],125.0)
             self.assertEqual(areas['destination']['radius_km'],300.0)
             self.assertEqual({role:area['center'] for role,area in areas.items()},centers)
-            self.assertEqual(test.session_state['map_view_revision'],revision)
+            self.assertEqual(test.session_state['map_initial_areas'],initial_areas)
             next(b for b in test.button if b.label=='Apply coordinates to map').click().run()
             self.assertEqual(test.session_state['map_areas']['tx']['radius_km'],125.0)
             self.assertEqual(test.session_state['map_areas']['destination']['radius_km'],300.0)
 
-    def test_zoom_and_pan_preserve_map_identity_across_reruns(self):
+    def test_map_updates_do_not_recreate_or_move_the_map(self):
         from streamlit_folium import generate_js_hash, _get_map_string
         hashes=[]
         parameters=[]
+        locations=[]
+        zooms=[]
         views=[{'zoom':8,'center':{'lat':61.2,'lng':-149.9}},
                {'zoom':10,'center':{'lat':61.3,'lng':-150.0}},
                {'zoom':10,'center':{'lat':61.3,'lng':-150.0}}]
         def render_map(figure,**kwargs):
+            locations.append(figure.location)
+            zooms.append(figure.options['zoom'])
             figure.get_root().render()
             hashes.append(generate_js_hash(_get_map_string(figure),kwargs['key']))
             parameters.append(kwargs['returned_objects'])
@@ -280,6 +352,8 @@ class Interface(unittest.TestCase):
                 test.run()
                 self.assertFalse(test.exception,test.exception)
                 self.assertEqual(len(set(hashes)),1)
+                self.assertEqual(locations,[[45,-120]]*3)
+                self.assertEqual(zooms,[3]*3)
                 self.assertEqual(parameters,[['all_drawings']]*3)
                 self.assertNotIn('map_view',test.session_state)
 

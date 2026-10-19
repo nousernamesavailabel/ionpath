@@ -2,6 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from html import escape
+import math
 
 import pandas as pd
 import streamlit as st
@@ -65,8 +66,11 @@ def show_weather(feeds, a, b, target):
 
 def snr_table_styles(frame):
     """One relative red–amber–green scale shared by both directions and minimum."""
-    low, high = float(frame.min().min()), float(frame.max().max())
+    finite=[float(value) for value in frame.to_numpy().ravel() if pd.notna(value) and math.isfinite(float(value))]
+    low, high = (min(finite),max(finite)) if finite else (-10.,10.)
     def style(value):
+        if pd.isna(value) or not math.isfinite(float(value)):
+            return 'background-color: #d1d5db; color: #17212b'
         fraction = (float(value) - low) / (high - low) if high > low else 0.5
         start, end, weight = ((248, 113, 113), (252, 211, 77), fraction * 2) if fraction <= .5 else ((252, 211, 77), (74, 222, 128), (fraction - .5) * 2)
         rgb = tuple(round(a + (b - a) * weight) for a, b in zip(start, end))
@@ -85,7 +89,8 @@ def colored_snr_table_html(frame):
     for index, row in frame.iterrows():
         parts.append(f'<tr><th scope="row" style="{header_style};text-align:left">{float(index):g}</th>')
         for column, value in row.items():
-            parts.append(f'<td style="{styles.loc[index, column]};padding:12px 16px;text-align:right;border:1px solid #64748b;font-weight:600">{float(value):.1f}</td>')
+            label=f'{float(value):.1f}' if pd.notna(value) and math.isfinite(float(value)) else '—'
+            parts.append(f'<td style="{styles.loc[index, column]};padding:12px 16px;text-align:right;border:1px solid #64748b;font-weight:600">{label}</td>')
         parts.append('</tr>')
     parts.append('</tbody></table></div>')
     return ''.join(parts)

@@ -1,0 +1,25 @@
+[Unit]
+Description=Ionpath HF path planner
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+Image=localhost/ionpath:latest
+ContainerName=ionpath
+# EXAMPLE ONLY: replace 192.168.1.50 with the ionpath VM private address.
+PublishPort=192.168.1.50:8501:8501
+Volume=ionpath-cache:/app/.cache:U
+Environment=IONPATH_PUBLIC=1
+NoNewPrivileges=true
+
+[Service]
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=180
+# Bound concurrent beta workload; tune after measuring the host.
+MemoryMax=3G
+CPUQuota=200%
+TasksMax=256
+
+[Install]
+WantedBy=default.target

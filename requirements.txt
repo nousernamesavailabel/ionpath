@@ -8,3 +8,7 @@ streamlit-folium>=0.27
 h5py>=3.15
 
 necpp==2.3.4
+
+reportlab==4.4.9
+pygeomag==1.1.0
+vl-convert-python==1.9.0.post1

@@ -25,3 +25,10 @@ transmitter_settings.json
 .vscode/
 .idea/
 .DS_Store
+
+# Streamlit agent skills (environment-specific symlinks)
+.agents/skills/developing-with-streamlit
+
+# Generated run reports and visual QA artifacts
+output/pdf/
+tmp/pdfs/
